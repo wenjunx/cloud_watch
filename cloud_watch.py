@@ -32,7 +32,10 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 TOKEN = os.environ.get("ZHIHU_TOKEN", "xiao-peng-61-47")
 KEY = os.environ.get("SERVERCHAN_KEY", "").strip()
-DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
+DRY_RUN = os.environ.get("DRY_RUN", "0").strip().lower() in ("1", "true", "yes")
+# 在 GitHub 上手动运行时可勾选「强制推送一条」，用来验证微信能不能收到
+# 注意：GitHub 的 boolean 输入传进来是字符串 "true"，所以要宽松匹配
+TEST_PUSH = os.environ.get("TEST_PUSH", "0").strip().lower() in ("1", "true", "yes", "on")
 SEEN_PATH = Path(os.environ.get("SEEN_PATH", "data/seen.json"))
 KEEP_IDS = 300
 DAILY_LIMIT = 5  # Server酱免费版每天 5 条
@@ -144,20 +147,59 @@ def save_state(state):
     SEEN_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
+def do_push(fresh, state):
+    """推送并维护当日计数。返回 (ok, note)，ok 为 None 表示因额度被跳过。"""
+    if state.get("sent", 0) >= DAILY_LIMIT:
+        return None, f"今日免费额度已用尽（{DAILY_LIMIT} 条）"
+    title = f"知乎·派大星皮皮 更新了{len(fresh)}条"
+    ok, note = push(title, build_body(fresh))
+    if ok and not DRY_RUN:
+        state["sent"] = state.get("sent", 0) + 1
+    return ok, note
+
+
 def main():
+    log(f"=== 本轮开始 | 用户 {TOKEN} | 推送KEY "
+        f"{'已设置' if KEY else '【未设置】'} | TEST_PUSH={TEST_PUSH} | DRY_RUN={DRY_RUN}")
+    if not KEY and not DRY_RUN:
+        log("[!] 没有拿到 SERVERCHAN_KEY，无法推送。"
+            "请到仓库 Settings → Secrets and variables → Actions 里添加同名密钥。")
+
     today = datetime.now(CST).strftime("%Y-%m-%d")
-    items = fetch_pins()
+    try:
+        items = fetch_pins()
+    except Exception as e:
+        log(f"[x] 抓取失败: {e}")
+        return
     log(f"拉到 {len(items)} 条想法")
     if not items:
         log("[!] 想法接口返回空，可能是网络或风控，本轮结束")
         return
+    newest = max(items, key=lambda x: x["created"])
+    log(f"    最新一条：{time.strftime('%Y-%m-%d %H:%M', time.localtime(newest['created']))}"
+        f" | {(newest['excerpt'] or newest['title'])[:30]}")
+
+    # 手动测试：不管有没有新动态，强推一条最新的，用来验证通道
+    if TEST_PUSH:
+        ok, note = push("知乎监控·云端测试", build_body(items[:1]))
+        log(f"[{'√' if ok else 'x'}] 测试推送 -> {note}")
+        log("    没收到就展开上面这行看返回内容；测试推送不改动已见列表，不会重复推。")
+        return
 
     state = load_state()
+    now_ts = time.time()
 
-    # 首次：只建基线
+    # 首次运行 / 缓存丢失：建基线，只补推最近 24 小时内的（避免把历史想法全推给你）
     if state is None:
-        save_state({"ids": [i["id"] for i in items], "date": today, "sent": 0})
-        log(f"[√] 基线已建立（{len(items)} 条），不推送。之后的新想法才会提醒你。")
+        new_state = {"ids": [i["id"] for i in items][:KEEP_IDS], "date": today, "sent": 0}
+        log(f"[√] 基线已建立（{len(items)} 条）")
+        recent = [i for i in items if i["created"] and now_ts - i["created"] <= 86_400]
+        if recent:
+            ok, note = do_push(recent, new_state)
+            log(f"[{'√' if ok else 'x'}] 首次运行，补推最近 24h 内的 {len(recent)} 条 -> {note}")
+        else:
+            log("    最近 24 小时内没有想法，不推送。之后发新的才会提醒你。")
+        save_state(new_state)
         return
 
     if state.get("date") != today:
@@ -172,20 +214,19 @@ def main():
         return
 
     fresh.sort(key=lambda x: x["created"])
-    if state.get("sent", 0) >= DAILY_LIMIT:
-        log(f"[!] 今日免费额度已用尽（{DAILY_LIMIT} 条），本条跳过")
+    ok, note = do_push(fresh, state)
+    if ok:
+        log(f"[√] 已推送 {len(fresh)} 条 -> {note}")
+        state["ids"] = list(dict.fromkeys([i["id"] for i in items] + list(known)))[:KEEP_IDS]
+    elif ok is None:
+        log(f"[!] {note}，本条先不标记，次日额度重置后自动补推")
     else:
-        title = f"知乎·派大星皮皮 更新了{len(fresh)}条"
-        ok, note = push(title, build_body(fresh))
-        log(f"[{'√' if ok else 'x'}] 推送 {len(fresh)} 条 -> {note}")
-        if ok and not DRY_RUN:
-            state["sent"] = state.get("sent", 0) + 1
+        log(f"[x] 推送失败 -> {note}，不标记为已读，下轮自动重试")
 
-    ids = [i["id"] for i in items]
-    merged = list(dict.fromkeys(ids + list(known)))[:KEEP_IDS]
-    save_state({"ids": merged, "date": today, "sent": state.get("sent", 0)})
+    save_state(state)
     log(f"状态已更新（今日已推 {state.get('sent', 0)}/{DAILY_LIMIT} 条）")
 
 
 if __name__ == "__main__":
     sys.exit(0 if main() is None else 0)
+
