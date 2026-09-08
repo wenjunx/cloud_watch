@@ -159,7 +159,14 @@ def do_push(fresh, state):
 
 
 def main():
-    log(f"=== 本轮开始 | 用户 {TOKEN} | 推送KEY "
+    # GitHub 注入的环境变量：GITHUB_EVENT_NAME=schedule 表示定时自动跑，
+    # workflow_dispatch 表示有人在网页上手动点的。用来确认定时是否真的生效。
+    event = os.environ.get("GITHUB_EVENT_NAME", "本地运行")
+    run_no = os.environ.get("GITHUB_RUN_NUMBER", "-")
+    trigger = {"schedule": "定时自动",
+               "workflow_dispatch": "手动点击",
+               "本地运行": "本地运行"}.get(event, event)
+    log(f"=== 第 {run_no} 次运行 | 触发方式：{trigger}（{event}） | 用户 {TOKEN} | 推送KEY "
         f"{'已设置' if KEY else '【未设置】'} | TEST_PUSH={TEST_PUSH} | DRY_RUN={DRY_RUN}")
     if not KEY and not DRY_RUN:
         log("[!] 没有拿到 SERVERCHAN_KEY，无法推送。"
@@ -229,4 +236,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(0 if main() is None else 0)
-
