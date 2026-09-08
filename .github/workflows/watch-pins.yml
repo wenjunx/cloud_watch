@@ -42,7 +42,8 @@ jobs:
         env:
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           ZHIHU_TOKEN: xiao-peng-61-47
-          TEST_PUSH: ${{ github.event.inputs.force_test || '0' }}
+          # boolean 输入在 inputs 上下文里是真布尔值，这里统一转成 '1' / '0'
+          TEST_PUSH: ${{ inputs.force_test && '1' || '0' }}
         run: python cloud_watch.py
 
       - name: Save seen state
