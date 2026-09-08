@@ -1,0 +1,53 @@
+name: Zhihu Pins Watch
+
+on:
+  schedule:
+    # UTC 时间，全天每 5 分钟一轮（GitHub 高峰期可能延迟，属正常）
+    - cron: '*/5 * * * *'
+  workflow_dispatch:   # 允许在网页上手动点一下立刻跑
+    inputs:
+      force_test:
+        description: '强制推送一条最新想法（用于验证微信能否收到）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zhihu-pins-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 已见过的想法 id 存在缓存里，跨运行保留（GitHub 免费提供，无需额外密钥）
+      - name: Restore seen state
+        uses: actions/cache/restore@v4
+        with:
+          path: data/seen.json
+          key: zhihu-seen-${{ github.run_id }}
+          restore-keys: |
+            zhihu-seen-
+
+      - name: Watch zhihu pins
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          ZHIHU_TOKEN: xiao-peng-61-47
+          TEST_PUSH: ${{ github.event.inputs.force_test || '0' }}
+        run: python cloud_watch.py
+
+      - name: Save seen state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/seen.json
+          key: zhihu-seen-${{ github.run_id }}
